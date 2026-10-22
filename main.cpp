@@ -1,6 +1,8 @@
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <memory>
+#include <ranges>
 #include <string>
 #include <utility>
 #include <vector>
@@ -9,12 +11,16 @@
 #include "raymath.h"
 #include "rlgl.h"
 
-using std::vector, std::string, std::unique_ptr;
+using std::vector, std::array, std::string, std::unique_ptr, std::pair;
 
 #define WINDOW_WIDTH 1000.0
 #define WINDOW_HEIGHT 750.0
 
-#define WINDOW_CENTER Vector2{WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2}
+#define rlVertex3fv(v) rlVertex3f((v).x, (v).y, (v).z)
+
+#define SPACE_CENTER Vector3{0.0f, 0.0f, 0.0f}
+
+#define CYAN CLITERAL(Color){0, 255, 255, 255}
 
 template <typename In, typename Out>
 constexpr In cast(Out&& src) noexcept {
@@ -27,17 +33,17 @@ struct Body {
 	string name;
 	double mass;
 	double rad;
-	Vector2 pos = WINDOW_CENTER;
+	Vector3 pos = SPACE_CENTER;
 	Color col;
 	double vel = 0;
 
-	Body(string name_, double rad_, double mass_, Vector2 pos_, Color col_)
+	Body(string name_, double rad_, double mass_, Vector3 pos_, Color col_)
 		: name(name_), mass(mass_), rad(rad_), pos(pos_), col(col_) {
 		std::clog << name << " successfully initialized\n";
 	}
 
 	void draw() {
-		DrawCircleV(pos, cast<float>(rad), col);
+		DrawSphere(pos, cast<float>(rad), col);
 	}
 };
 
@@ -49,7 +55,7 @@ struct Orbit {
 
    public:
 	Body centralBody;
-	double a = 5;
+	double a = 5.0;
 	double b = 0.9;
 	double omega = 0;
 	double ecc;
@@ -57,8 +63,12 @@ struct Orbit {
 	double phi;
 	double v;
 
-	Orbit(Body centralBody_, double a_, double b_, double w)
-		: centralBody(centralBody_), a(a_), b(b_), omega(w) {
+	Color col;
+
+	array<pair<Vector3, Vector3>, 360> orbitPoints = {};
+
+	Orbit(Body centralBody_, double a_, double b_, double w, Color col_)
+		: centralBody(centralBody_), a(a_), b(b_), omega(w), col(col_) {
 		mu = centralBody.mass * G;
 		rcpA = 1.0 / a;
 		ecc = sqrt(1 - ((b * b) / (a * a)));
@@ -74,52 +84,50 @@ struct Orbit {
 		phi = acos((L / (distance * v)) > 1.0 ? 1.0 : (L / (distance * v)));
 		return v;
 	}
+
+	void calculateOrbit() {
+		col = Fade(col, 0.5);
+		for (size_t i = 0; i < 360; ++i) {
+			double iRad = cast<double>(i) * cast<double>(DEG2RAD);
+			double iRadOffset = iRad + cast<double>(DEG2RAD);
+
+			orbitPoints.at(i).first = {
+				cast<float>(orbitalDist(iRadOffset) * cos(iRadOffset)),
+				0.0f,
+				cast<float>(orbitalDist(iRadOffset) * sin(iRadOffset))};
+
+			orbitPoints.at(i).second = {
+				cast<float>(orbitalDist(iRad) * cos(iRad)),
+				0.0f,
+				cast<float>(orbitalDist(iRad) * sin(iRad))};
+		}
+	}
 };
 
 struct Planet : Body {
 	Body* centralBody;
 
-	Orbit orbit = Orbit(*centralBody, 1, 1, 0);
+	Orbit orbit = Orbit(*centralBody, 1, 1, 0, WHITE);
 
 	double SOIrad;
 	double distance = 1;
 	double time = 0;
 
+	Model gpuModel;
+
 	Planet(double a, double b, double w, double rad_, double mass_, Color col_, string name_, Body* centralBody_ [[clang::lifetimebound]])
-		: Body(name_, rad_, mass_, WINDOW_CENTER, col_), centralBody(centralBody_) {
+		: Body(name_, rad_, mass_, SPACE_CENTER, col_), centralBody(centralBody_) {
 		SOIrad = a * pow(mass / centralBody->mass, 0.4);
-		orbit = Orbit(*centralBody, a, b, w);
-		Body::pos = {centralBody->pos.x - cast<float>(orbit.orbitalDist(cast<double>(PI))), centralBody->pos.y};
-	}
-
-	void draw() {
-		DrawCircleV(pos, float(rad), col);
-	}
-
-	void drawOrbit() {
-		rlBegin(RL_LINES);
-		for (int i = 0; i < 360; i += 1) {
-			double iRad = cast<double>(i) * cast<double>(DEG2RAD);
-			double iRadOffset = iRad + cast<double>(DEG2RAD);
-
-			rlColor4ub(cast<unsigned char>(0.5 * cast<int>(col.r)),
-					   cast<unsigned char>(0.5 * cast<int>(col.g)),
-					   cast<unsigned char>(0.5 * cast<int>(col.b)),
-					   cast<unsigned char>(0.5 * cast<int>(col.a)));
-
-			rlVertex2f(
-				cast<float>(cast<double>(centralBody->pos.x) + cast<double>(orbit.orbitalDist(iRadOffset) * cos(iRadOffset))),
-				cast<float>(cast<double>(centralBody->pos.y) + cast<double>(orbit.orbitalDist(iRadOffset) * sin(iRadOffset))));
-
-			rlVertex2f(
-				cast<float>(cast<double>(centralBody->pos.x) + cast<double>(orbit.orbitalDist(iRad) * cos(iRad))),
-				cast<float>(cast<double>(centralBody->pos.y) + cast<double>(orbit.orbitalDist(iRad) * sin(iRad))));
-		}
-		rlEnd();
+		orbit = Orbit(*centralBody, a, b, w, col);
+		Body::pos = {
+			centralBody->pos.x - cast<float>(orbit.orbitalDist(cast<double>(PI))),
+			centralBody->pos.y,
+			centralBody->pos.z};
+		orbit.calculateOrbit();
 	}
 
 	void drawSOI() {
-		DrawCircleV(pos, cast<float>(SOIrad), Fade(col, 0.2f));
+		DrawSphereWires(pos, cast<float>(SOIrad), 12, 12, Fade(col, 0.2f));
 	}
 
 	void updatePos(float dt) {
@@ -134,17 +142,33 @@ struct Planet : Body {
 			E = E - (E - orbit.ecc * sin(E) - M) / (1.0 - orbit.ecc * cos(E));
 		}
 
+		distance = orbit.a * (1.0 - orbit.ecc * cos(E));
+
+		vel = orbit.orbitalSpeed(distance) + centralBody->vel;
+
 		double X = orbit.a * (cos(E) - orbit.ecc);
-		double Y = orbit.a * sin(E) * sqrt(1.0 - (orbit.ecc * orbit.ecc));
+		double Z = orbit.a * sin(E) * sqrt(1.0 - (orbit.ecc * orbit.ecc));
 
-		double rotatedX = X * cos(orbit.omega) - Y * sin(orbit.omega);
-		double rotatedY = X * sin(orbit.omega) + Y * cos(orbit.omega);
+		double rotatedX = X * cos(orbit.omega) - Z * sin(orbit.omega);
+		double rotatedZ = X * sin(orbit.omega) + Z * cos(orbit.omega);
 
-		pos = {cast<float>(rotatedX), cast<float>(rotatedY)};
+		pos = {cast<float>(rotatedX), 0.0f, cast<float>(rotatedZ)};
 		pos += centralBody->pos;
+	}
 
-		distance = cast<double>(Vector2Distance(centralBody->pos, pos));
-		vel = orbit.orbitalSpeed(distance);
+	void drawOrbit() {
+		rlBegin(RL_LINES);
+		for (size_t i = 0; i < 360; ++i) {
+			rlColor4ub(orbit.col.r,
+					   orbit.col.g,
+					   orbit.col.b,
+					   orbit.col.a);
+
+			rlVertex3fv(centralBody->pos + orbit.orbitPoints.at(i).first);
+
+			rlVertex3fv(centralBody->pos + orbit.orbitPoints.at(i).second);
+		}
+		rlEnd();
 	}
 };
 
@@ -166,55 +190,124 @@ struct Planets {
 		return planets.at(0).get();
 	}
 
+	int index(string key) {
+		for (size_t i = 0; (++i)-- < planets.size(); ++i) {
+			if (planets.at(i)->name == key) {
+				return cast<int>(i);
+			}
+		}
+		return 0;
+	}
+
 	template <auto... Funcs, typename... Args>
 	void run(Args&&... args) {
 		for (auto& planet : planets) {
 			(std::invoke(Funcs, *planet, std::forward<Args>(args)...), ...);
 		}
 	}
+
+	template <auto... Funcs, typename... Args>
+	void run(Body* currentBody, Args&&... args) {
+		int idx = index(currentBody->name);
+		for (size_t i = cast<size_t>(idx); i + 1 < planets.size(); ++i) {
+			(std::invoke(Funcs, planets.at(i), std::forward<Args>(args)...), ...);
+		}
+		for (size_t i = cast<size_t>(idx); i > 0; --i) {
+			(std::invoke(Funcs, planets.at(i), std::forward<Args>(args)...), ...);
+		}
+	}
 };
+
+constexpr void updateCamera(Camera3D& camera, Body* target, float& xAngle, float& yAngle, float& rad, float& scroll, float& dt) {
+	scroll = GetMouseWheelMove();
+	rad -= scroll * 20.0f;
+	if (rad < cast<float>(target->rad) * 3.0f) rad = cast<float>(target->rad) * 3.0f;
+	if (rad > cast<float>(target->rad) * 1000.0f) rad = cast<float>(target->rad * 1000.0);
+
+	if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
+		Vector2 mouseDelta = GetMouseDelta();
+
+		float speed = 4.0f;
+
+		xAngle += mouseDelta.x * speed * dt;
+
+		yAngle += mouseDelta.y * speed * dt;
+
+		if (yAngle > 1.55f) yAngle = 1.55f;
+		if (yAngle < -1.55f) yAngle = -1.55f;
+	}
+
+	camera.target = target->pos;
+
+	camera.position.x = sinf(xAngle) * cosf(yAngle) * rad;
+	camera.position.y = sinf(yAngle) * rad;
+	camera.position.z = cosf(xAngle) * cosf(yAngle) * rad;
+
+	camera.position += target->pos;
+}
 
 int main() {
 	InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Planets");
 
-	Camera2D camera = {};
-	camera.target = WINDOW_CENTER;
-	camera.offset = WINDOW_CENTER;
-	camera.rotation = 0.0f;
-	camera.zoom = 1.0f;
+	rlSetClipPlanes(cast<double>(0.001), cast<double>(1e6));
+	Camera3D camera = {};
+	camera.position = Vector3{0.0f, 10.0f, 10.0f};
+	camera.target = SPACE_CENTER;
+	camera.up = Vector3{0.0f, 1.0f, 0.0f};
+	camera.fovy = 60.0f;
+	camera.projection = CAMERA_PERSPECTIVE;
 
-	Body sun = Body({"Sun", 25, 1e12, WINDOW_CENTER, YELLOW});
+	float cameraAngleX = 0.0f;
+	float cameraAngleY = 5.0f;
+	float cameraRadius = 15.0f;
+
+	if (cameraAngleY > 1.55f) cameraAngleY = 1.55f;
+	if (cameraAngleY < -1.55f) cameraAngleY = -1.55f;
+
+	Body sun = Body({"Sun", 1000, 1e15, SPACE_CENTER, YELLOW});
 
 	Body* camCurrentBody = &sun;
 	int camCurrentIdx = 0;
 
 	Planets planets = {};
 
-	planets.add(Planet({360, 360, 0.875 * cast<double>(PI), 0.5, 1e7, BLUE, "Earth", &sun}));
-	planets.add(Planet({2.3, 2.3, 0.0, 0.1, 2e5, GRAY, "Moon", planets.at("Earth")}));
+	planets.add(Planet({15000, 15000, 0.0, 25, 1e10, BROWN, "Mercury", &sun}));
+
+	planets.add(Planet({24000, 24000, 0.0, 50, 1e11, YELLOW, "Venus", &sun}));
+
+	planets.add(Planet({36000, 36000, 0.0, 50, 1e11, BLUE, "Earth", &sun}));
+	planets.add(Planet({320, 310, 0.0, 1, 2e8, GRAY, "Moon", planets.at("Earth")}));
+
+	planets.add(Planet({48000, 48000, 0.0 * cast<double>(PI), 30, 1e11, RED, "Mars", &sun}));
+	planets.add(Planet({220, 220, 0.0, 8, 1.5e8, LIGHTGRAY, "Phobos", planets.at("Mars")}));
+	planets.add(Planet({340, 340, 0.0, 5, 1e8, DARKGRAY, "Deimos", planets.at("Mars")}));
+
+	planets.add(Planet({70000, 70000, 0.0, 450, 4e12, ORANGE, "Jupiter", &sun}));
+
+	planets.add(Planet({88000, 88000, 0.0, 380, 4e11, GOLD, "Saturn", &sun}));
+
+	planets.add(Planet({106000, 106000, 0.0, 280, 2e11, CYAN, "Uranus", &sun}));
+
+	planets.add(Planet({124000, 124000, 0.0, 270, 1.9e11, DARKBLUE, "Neptune", &sun}));
 
 	float dt;
+	float scroll = 0;
 	int speed = 1;
 
 	while (!WindowShouldClose()) {
-		dt = cast<float>(speed) * GetFrameTime();
+		dt = GetFrameTime();
 
 		if (IsKeyPressed(KEY_PERIOD)) {
-			speed *= 2;
+			speed *= 4;
 		} else if (IsKeyPressed(KEY_COMMA)) {
-			speed /= 2;
+			speed /= 4;
 		}
 
 		if (speed < 1) speed = 1;
 
-		if (speed > 1024) speed = 1;
+		if (speed > 16384) speed = 1;
 
-		camera.zoom = expf(logf(camera.zoom) + (cast<float>(GetMouseWheelMove()) * 0.1f));
-
-		if (camera.zoom > 30.0f / cast<float>(camCurrentBody->rad))
-			camera.zoom = 30.0f / cast<float>(camCurrentBody->rad);
-		else if (camera.zoom < 0.1f)
-			camera.zoom = 0.1f;
+		updateCamera(camera, camCurrentBody, cameraAngleX, cameraAngleY, cameraRadius, scroll, dt);
 
 		if (IsKeyPressed(KEY_RIGHT)) {
 			camCurrentIdx++;
@@ -224,6 +317,7 @@ int main() {
 			} else if (camCurrentIdx > 0) {
 				camCurrentBody = planets.at(cast<size_t>(camCurrentIdx - 1));
 			}
+			camera.position = camCurrentBody->pos + Vector3{0.0f, 10.0f, 0.0f};
 		} else if (IsKeyPressed(KEY_LEFT)) {
 			camCurrentIdx--;
 			if (camCurrentIdx <= -1) {
@@ -240,11 +334,11 @@ int main() {
 
 		BeginDrawing();
 		ClearBackground(BLACK);
-		BeginMode2D(camera);
+		BeginMode3D(camera);
 		sun.draw();
-		planets.run<&Planet::drawOrbit, &Planet::drawSOI, &Planet::draw>();
-		planets.run<&Planet::updatePos>(dt);
-		EndMode2D();
+		planets.run<&Planet::drawOrbit, &Planet::draw, &Planet::drawSOI>();
+		planets.run<&Planet::updatePos>(cast<float>(speed) * dt);
+		EndMode3D();
 		DrawFPS(20, 20);
 		DrawText(TextFormat("Velocity: %f", camCurrentBody->vel), 20, 50, 18, GREEN);
 		DrawText(TextFormat("SPEED: %d", speed), 20, 80, 18, BLUE);
